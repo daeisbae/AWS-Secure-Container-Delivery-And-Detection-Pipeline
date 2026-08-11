@@ -1,0 +1,4 @@
+Authlib==1.6.8
+SQLAlchemy==1.2.17
+fastapi==0.141.1
+uvicorn==0.51.0
