@@ -1,51 +1,39 @@
-# AWS Secure Container Delivery and Detection Pipeline
+# AWS Secure Container Delivery Pipeline
 
-This security pipeline lab is a small FastAPI service delivered to ECS Fargate through a security-focused GitHub Actions.
+This lab uses one imaginary vulnerable FastAPI e-commerce application to implement security pipeline.
 
 ![Pipeline architecture](docs/architecture.png)
 
-## Scenarios
+## Workflow
 
-### Experiment 1
+1. Install the test dependencies and run pytest.
+2. Build the container.
+3. Run Trivy against the final image for Critical OS and Python package findings.
+4. Run the local Opengrep rule against the production login implementation.
+5. Start that same image on an internal Docker network and run an OWASP ZAP active scan.
+6. Generate a CycloneDX SBOM with Trivy.
+7. Package the image only if every security gate passes.
+8. For an approved main branch run, obtain short-lived AWS credentials through GitHub OIDC, push the same image to ECR, sign and verify its digest with Cosign, and update ECS.
 
-Tests container rejection. A temporary branch pins `GitPython==3.1.29`, builds the final image, and demonstrates that the Trivy critical gate prevents that image from becoming an approved artifact. The run must leave the ECR digest and ECS task revision unchanged.
+## Experiments
 
-### Experiment 2
+### Experiment 1: dependencies and vulnerable container
 
-Tests the detection path. The service temporarily enables `POST /demo/cloudtrail`. The endpoint calls the read-only `ec2:DescribeRegions` API and returns only a scenario ID. The application log stores that scenario ID with the AWS SDK `RequestId` and ECS task identity. The task role has that one permission. A CloudWatch metric filter matches the task-role event and changes an alarm to `ALARM`. The investigation uses `aws cloudtrail lookup-events` and the shared request ID to verify the event. Detection latency is the first alarm timestamp minus the UTC trigger time; event-observation latency is recorded separately. CloudTrail delivery is delayed, so neither value is a real-time guarantee.
+We are expecting to find the vulnerable packages / container images below using Trivy
 
-### Experiment 3
+| Layer | Installed package | Expected CVE |
+| --- | --- | --- |
+| Alpine | sqlite-libs 3.48.0-r0 | CVE-2025-3277 |
+| Python | Authlib 1.6.8 | CVE-2026-27962 |
+| Python | SQLAlchemy 1.2.17 | CVE-2019-7164 |
+| Python | SQLAlchemy 1.2.17 | CVE-2019-7548 |
 
-Tests the application-library gate. A separate trusted branch adds the vulnerable GitPython version and records the Snyk error annotation, JSON result, exit code, and policy status. Trivy may report the same dependency during that run. Experiment 3 succeeds when the Snyk evidence agrees with the blocked approved-image package.
+### Experiment 2: SAST for login SQL injection
 
-The final results table records the blocked image, Snyk alert, deployed digest, finding counts before and after remediation, total pipeline duration, alarm detection latency, CloudTrail event-observation latency, and Terraform teardown result.
+The production `/login` route reaches `_load_login_record()` in `app/store.py`. That function inserts `credentials.username` into an SQL string before passing it to `connection.execute()`.
 
+The workflow downloads Opengrep, and scans the file with `opengrep/experiment2-sql-injection.yml`.
 
+### Experiment 3: DAST for reflected XSS
 
-## Gate policy
-
-- Any unit test failure stops the workflow.
-- Runtime and test dependencies install from hash-checked locks; CI regenerates both locks and rejects drift.
-- Snyk runs `test` against `requirements.txt` and the installed Python dependency tree. A critical finding produces a GitHub `Snyk application-library alert` error and blocks packaging.
-- The workflow saves `snyk-open-source.json`, `snyk-open-source.log`, `snyk-exit-code.txt`, and `snyk-status.json`. `gate-summary.json` records the scan and policy outcomes.
-- Every `pull_request` run skips the secret-backed Snyk step. Trusted `push` and `workflow_dispatch` runs fail closed when `SNYK_TOKEN` or `SNYK_ORG` is missing, the CLI cannot be installed, or the scan does not pass. The workflow does not use `pull_request_target` to bypass this boundary.
-- This lab does not run `snyk monitor`. It creates no continuously monitored Snyk project snapshot, so dashboard and email alerts for newly disclosed issues are outside the experiment. This avoids adding persistent external snapshot retention to the lab.
-- Semgrep runs with `--strict --error --severity ERROR`.
-- The Semgrep `p/python` policy is fetched from the registry at run time. The Semgrep binary is pinned, but the remote rule content is current rather than byte-pinned; vendor a reviewed ruleset before using this as production policy.
-- The free Checkov gate fails on every unsuppressed Terraform check. Severity-only gating depends on platform metadata, so this lab does not pretend that Checkov can always identify a "critical" result.
-- Deliberate lab exceptions use inline `#checkov:skip=<ID>:<reason>` comments in the Terraform. The pipeline blocks every other failure.
-- Snyk checks the declared Python application libraries before the image is approved. Trivy scans the final image, including OS packages and installed application packages. Both gates block critical findings, but their advisory data and severity ratings can differ.
-- Trivy saves a full JSON report and separately fails on `CRITICAL` vulnerabilities with `--exit-code 1`. The vulnerable-dependency demo does not use `--ignore-unfixed`.
-- Missing or malformed scanner output stops deployment.
-- Raw reports are uploaded as run artifacts even when a gate blocks deployment.
-- The vulnerable image never reaches ECR.
-- Third-party GitHub Actions are pinned to full commit SHAs.
-- Semgrep, Checkov, Trivy, Syft, Snyk, and Cosign use pinned versions recorded in the run summary.
-- The deployment job has only `contents: read` and `id-token: write` unless another permission is justified.
-- Cosign signs the pushed digest and verifies the exact GitHub workflow identity before ECS is updated.
-- ECS receives `repository@sha256:...`, not `latest`.
-
-ECS does not provide Cosign admission enforcement in this design. Signature verification is a pre-deployment CI gate, not a runtime admission control.
-
-Terraform ignores the service's task-definition revision after CI takes over deployment. The workflow clones the active revision and changes only the image and `DEMO_MODE`. If the Terraform task-definition baseline is hardened later, recreate the disposable foundation or reconcile the active revision before another deployment. This lab expects the foundation to be finalized before the first image is released.
-
+The production `/search` route returns an HTML page with the submitted product query inserted without HTML encoding. The workflow builds the same production image, starts it on a temporary internal Docker network with no published host port, and runs the pinned OWASP ZAP active full scan against `/search?q=keyboard` which is vulnerable to reflected-XSS alert 40012.
