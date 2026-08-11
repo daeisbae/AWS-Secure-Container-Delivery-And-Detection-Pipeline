@@ -1,0 +1,23 @@
+rules:
+  - id: ecommerce-login-sql-injection
+    languages:
+      - python
+    severity: ERROR
+    message: >-
+      Login input reaches an SQL query string. Select the account with a
+      parameterized query, then verify the submitted password against its
+      stored password hash in application code.
+    metadata:
+      category: security
+      cwe:
+        - "CWE-89: Improper Neutralization of Special Elements used in an SQL Command"
+      recommendation: >-
+        Select the account with execute(query, parameters) placeholders, then
+        verify the submitted password against the stored password hash.
+    mode: taint
+    pattern-sources:
+      - pattern: $CREDENTIALS.username
+    pattern-sinks:
+      - patterns:
+          - pattern: $CONNECTION.execute($QUERY)
+          - focus-metavariable: $QUERY

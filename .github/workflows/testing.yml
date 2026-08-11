@@ -1,0 +1,513 @@
+name: Testing
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      experiment:
+        description: Testing mode
+        required: true
+        type: choice
+        default: normal
+        options:
+          - normal
+          - experiment-1
+          - experiment-2
+          - experiment-3
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  PYTHON_VERSION: "3.12.9"
+  TRIVY_VERSION: "v0.70.0"
+  OPENGREP_VERSION: "v1.26.0"
+  OPENGREP_SHA256: "40c21299eeddabf743b856daa843d24f9d4a027130671cd45b3b21776fd9ab26"
+  OPENGREP_EXPERIMENT_RULE: "opengrep/experiment2-sql-injection.yml"
+  ZAP_IMAGE: "ghcr.io/zaproxy/zaproxy:2.17.0@sha256:781a2bdaea47324e7bab583e2263f21d257b0aee61ed51521a5be45f5f5081ef"
+  LOCAL_IMAGE: "secure-container-pipeline:candidate"
+  REPORT_DIR: "reports"
+
+jobs:
+  sca_experiment:
+    name: Trivy container experiment
+    if: >-
+      ${{
+        github.event_name == 'workflow_dispatch' &&
+        github.ref == 'refs/heads/main' &&
+        inputs.experiment == 'experiment-1'
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      CONTAINER_REPORT_DIR: container-evidence
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build the production candidate
+        run: |
+          mkdir -p "$CONTAINER_REPORT_DIR"
+          docker build \
+            --platform linux/amd64 \
+            --target production \
+            --iidfile "$CONTAINER_REPORT_DIR/image-id.txt" \
+            --tag "$LOCAL_IMAGE" \
+            .
+          docker image inspect "$LOCAL_IMAGE" \
+            > "$CONTAINER_REPORT_DIR/image-inspect.json"
+          cp Dockerfile "$CONTAINER_REPORT_DIR/Dockerfile"
+
+      - name: Install Trivy
+        uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          cache: true
+
+      - name: Scan for critical container vulnerabilities
+        run: |
+          set +e
+          trivy image \
+            --scanners vuln \
+            --severity CRITICAL \
+            --exit-code 1 \
+            --format json \
+            --output "$CONTAINER_REPORT_DIR/trivy.json" \
+            "$LOCAL_IMAGE" \
+            > "$CONTAINER_REPORT_DIR/trivy.log" 2>&1
+          scan_exit_code="$?"
+          set -e
+          cat "$CONTAINER_REPORT_DIR/trivy.log"
+          printf '%s\n' "$scan_exit_code" \
+            > "$CONTAINER_REPORT_DIR/trivy-exit-code.txt"
+
+          if [[ "$scan_exit_code" != "1" ]]; then
+            echo "::error::Trivy exited $scan_exit_code; expected a vulnerability result."
+            exit 1
+          fi
+
+      - name: Upload Trivy evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: container-evidence-experiment-1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.CONTAINER_REPORT_DIR }}/
+          if-no-files-found: warn
+          retention-days: 14
+
+  sast_experiment:
+    name: Opengrep login SQL injection experiment
+    if: >-
+      ${{
+        github.event_name == 'workflow_dispatch' &&
+        github.ref == 'refs/heads/main' &&
+        inputs.experiment == 'experiment-2'
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      SAST_REPORT_DIR: sast-evidence
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Opengrep
+        run: |
+          opengrep_url="https://github.com/opengrep/opengrep/releases/download/$OPENGREP_VERSION/opengrep_manylinux_x86"
+          curl --fail --location --retry 3 --proto '=https' --tlsv1.2 \
+            --output "$RUNNER_TEMP/opengrep" \
+            "$opengrep_url"
+          printf '%s  %s\n' "$OPENGREP_SHA256" "$RUNNER_TEMP/opengrep" \
+            | sha256sum --check
+          chmod 0555 "$RUNNER_TEMP/opengrep"
+          "$RUNNER_TEMP/opengrep" --version
+
+      - name: Scan for SQL injection with Opengrep
+        run: |
+          mkdir -p "$SAST_REPORT_DIR"
+          "$RUNNER_TEMP/opengrep" scan \
+            --config "$OPENGREP_EXPERIMENT_RULE" \
+            --no-rewrite-rule-ids \
+            --disable-version-check \
+            --strict \
+            --json-output="$SAST_REPORT_DIR/opengrep.json" \
+            app/store.py
+
+      - name: Upload Opengrep evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sast-evidence-experiment-2-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.SAST_REPORT_DIR }}/
+          if-no-files-found: warn
+          retention-days: 14
+
+  dast_experiment:
+    name: ZAP reflected XSS experiment
+    if: >-
+      ${{
+        github.event_name == 'workflow_dispatch' &&
+        github.ref == 'refs/heads/main' &&
+        inputs.experiment == 'experiment-3'
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      DAST_REPORT_DIR: dast-evidence
+      DAST_NETWORK: pipeline-security-dast-${{ github.run_id }}-${{ github.run_attempt }}
+      DAST_CONTAINER: pipeline-security-app-${{ github.run_id }}-${{ github.run_attempt }}
+      ZAP_CONTAINER: pipeline-security-zap-${{ github.run_id }}-${{ github.run_attempt }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build the production candidate
+        run: |
+          mkdir -p "$DAST_REPORT_DIR"
+          docker build \
+            --platform linux/amd64 \
+            --target production \
+            --iidfile "$DAST_REPORT_DIR/image-id.txt" \
+            --tag "$LOCAL_IMAGE" \
+            .
+          docker image inspect "$LOCAL_IMAGE" \
+            > "$DAST_REPORT_DIR/image-inspect.json"
+
+      - name: Start the isolated DAST target
+        run: |
+          docker pull "$ZAP_IMAGE"
+          install -d -m 0777 "$DAST_REPORT_DIR/zap"
+          cp app/main.py "$DAST_REPORT_DIR/scanned-main.py"
+
+          docker network create --internal "$DAST_NETWORK"
+          docker run --detach \
+            --name "$DAST_CONTAINER" \
+            --network "$DAST_NETWORK" \
+            --network-alias shop \
+            --read-only \
+            --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --health-interval 2s \
+            --health-timeout 3s \
+            --health-start-period 1s \
+            --health-retries 20 \
+            "$LOCAL_IMAGE"
+
+          for _ in {1..30}; do
+            health="$(docker inspect \
+              --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' \
+              "$DAST_CONTAINER")"
+            if [[ "$health" == "healthy" ]]; then
+              break
+            fi
+            if [[ "$health" == "unhealthy" ]]; then
+              docker logs "$DAST_CONTAINER"
+              exit 1
+            fi
+            sleep 2
+          done
+
+          health="$(docker inspect \
+            --format '{{.State.Health.Status}}' \
+            "$DAST_CONTAINER")"
+          if [[ "$health" != "healthy" ]]; then
+            echo "::error::The DAST target did not become healthy."
+            exit 1
+          fi
+
+      - name: Scan the application with ZAP
+        run: |
+          docker run --rm \
+            --name "$ZAP_CONTAINER" \
+            --network "$DAST_NETWORK" \
+            --volume "$GITHUB_WORKSPACE/$DAST_REPORT_DIR/zap:/zap/wrk:rw" \
+            "$ZAP_IMAGE" zap-full-scan.py \
+            -t "http://shop:8000/search?q=keyboard" \
+            -I \
+            -m 1 \
+            -T 5 \
+            -J zap.json \
+            -r zap.html \
+            -s \
+            2>&1 | tee "$DAST_REPORT_DIR/zap/zap.log"
+
+      - name: Clean up the DAST target
+        if: always()
+        run: |
+          mkdir -p "$DAST_REPORT_DIR"
+          docker logs "$DAST_CONTAINER" \
+            > "$DAST_REPORT_DIR/application.log" 2>&1 || true
+          docker rm --force "$ZAP_CONTAINER" >/dev/null 2>&1 || true
+          docker rm --force "$DAST_CONTAINER" >/dev/null 2>&1 || true
+          docker network rm "$DAST_NETWORK" >/dev/null 2>&1 || true
+
+      - name: Upload ZAP evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dast-evidence-experiment-3-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.DAST_REPORT_DIR }}/
+          if-no-files-found: warn
+          retention-days: 14
+
+  validate:
+    name: Test, build, and enforce gates
+    if: >-
+      ${{
+        github.event_name != 'workflow_dispatch' ||
+        inputs.experiment == 'normal'
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    env:
+      DAST_NETWORK: pipeline-security-normal-${{ github.run_id }}-${{ github.run_attempt }}
+      DAST_CONTAINER: pipeline-security-normal-app-${{ github.run_id }}-${{ github.run_attempt }}
+      ZAP_CONTAINER: pipeline-security-normal-zap-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-dev.lock
+
+      - name: Install locked dependencies
+        run: >-
+          python -m pip install
+          --require-hashes
+          --requirement requirements-dev.lock
+
+      - name: Run tests
+        run: python -m pytest
+
+      - name: Build image
+        id: build
+        run: |
+          mkdir -p "$REPORT_DIR"
+          printf '%s\n' production > "$REPORT_DIR/docker-target.txt"
+          docker build \
+            --platform linux/amd64 \
+            --target production \
+            --iidfile "$REPORT_DIR/image-id.txt" \
+            --tag "$LOCAL_IMAGE" \
+            .
+
+      - name: Install Trivy
+        id: setup_trivy
+        if: always() && steps.build.outcome == 'success'
+        uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          cache: true
+
+      - name: Install checksum-pinned Opengrep
+        id: setup_opengrep
+        if: always() && steps.build.outcome == 'success'
+        run: |
+          opengrep_url="https://github.com/opengrep/opengrep/releases/download/$OPENGREP_VERSION/opengrep_manylinux_x86"
+          curl --fail --location --retry 3 --proto '=https' --tlsv1.2 \
+            --output "$RUNNER_TEMP/opengrep" \
+            "$opengrep_url"
+          printf '%s  %s\n' "$OPENGREP_SHA256" "$RUNNER_TEMP/opengrep" \
+            | sha256sum --check
+          chmod 0555 "$RUNNER_TEMP/opengrep"
+          "$RUNNER_TEMP/opengrep" --version
+
+      - name: Block critical image vulnerabilities
+        id: trivy_gate
+        if: always() && steps.setup_trivy.outcome == 'success'
+        continue-on-error: true
+        run: |
+          trivy image \
+            --scanners vuln \
+            --severity CRITICAL \
+            --exit-code 1 \
+            --format json \
+            --output "$REPORT_DIR/trivy-critical.json" \
+            "$LOCAL_IMAGE"
+
+      - name: Block static-analysis findings
+        id: opengrep_gate
+        if: always() && steps.setup_opengrep.outcome == 'success'
+        continue-on-error: true
+        run: |
+          mkdir -p "$REPORT_DIR"
+          "$RUNNER_TEMP/opengrep" scan \
+            --config auto \
+            --no-rewrite-rule-ids \
+            --disable-version-check \
+            --strict \
+            --error \
+            --json-output="$REPORT_DIR/opengrep.json" \
+            app/
+
+      - name: Start the isolated DAST target
+        id: dast_start
+        if: always() && steps.build.outcome == 'success'
+        run: |
+          docker pull "$ZAP_IMAGE"
+          install -d -m 0777 "$REPORT_DIR/zap"
+
+          docker network create --internal "$DAST_NETWORK"
+          docker run --detach \
+            --name "$DAST_CONTAINER" \
+            --network "$DAST_NETWORK" \
+            --network-alias shop \
+            --read-only \
+            --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --health-interval 2s \
+            --health-timeout 3s \
+            --health-start-period 1s \
+            --health-retries 20 \
+            "$LOCAL_IMAGE"
+
+          for _ in {1..30}; do
+            health="$(docker inspect \
+              --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' \
+              "$DAST_CONTAINER")"
+            if [[ "$health" == "healthy" ]]; then
+              break
+            fi
+            if [[ "$health" == "unhealthy" ]]; then
+              docker logs "$DAST_CONTAINER"
+              exit 1
+            fi
+            sleep 2
+          done
+
+          health="$(docker inspect \
+            --format '{{.State.Health.Status}}' \
+            "$DAST_CONTAINER")"
+          if [[ "$health" != "healthy" ]]; then
+            echo "::error::The DAST target did not become healthy."
+            exit 1
+          fi
+
+      - name: Block dynamic-analysis findings
+        id: dast_gate
+        if: always() && steps.dast_start.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set +e
+          docker run --rm \
+            --name "$ZAP_CONTAINER" \
+            --network "$DAST_NETWORK" \
+            --volume "$GITHUB_WORKSPACE/$REPORT_DIR/zap:/zap/wrk:rw" \
+            "$ZAP_IMAGE" zap-api-scan.py \
+            -t "http://shop:8000/openapi.json" \
+            -f openapi \
+            -T 5 \
+            -J zap.json \
+            -r zap.html \
+            -s \
+            2>&1 | tee "$REPORT_DIR/zap/zap.log"
+          zap_exit_code="${PIPESTATUS[0]}"
+          set -e
+          printf '%s\n' "$zap_exit_code" \
+            > "$REPORT_DIR/zap/zap-exit-code.txt"
+          exit "$zap_exit_code"
+
+      - name: Clean up the DAST target
+        if: always()
+        run: |
+          mkdir -p "$REPORT_DIR"
+          docker logs "$DAST_CONTAINER" \
+            > "$REPORT_DIR/dast-application.log" 2>&1 || true
+          docker rm --force "$ZAP_CONTAINER" >/dev/null 2>&1 || true
+          docker rm --force "$DAST_CONTAINER" >/dev/null 2>&1 || true
+          docker network rm "$DAST_NETWORK" >/dev/null 2>&1 || true
+
+      - name: Generate CycloneDX SBOM
+        if: >-
+          ${{
+            always() &&
+            steps.build.outcome == 'success' &&
+            steps.setup_trivy.outcome == 'success'
+          }}
+        run: |
+          trivy image \
+            --scanners vuln \
+            --skip-db-update \
+            --format cyclonedx \
+            --output "$REPORT_DIR/sbom.cdx.json" \
+            "$LOCAL_IMAGE"
+
+      - name: Enforce all security gates
+        if: always() && steps.build.outcome == 'success'
+        env:
+          TRIVY_OUTCOME: ${{ steps.trivy_gate.outcome }}
+          OPENGREP_OUTCOME: ${{ steps.opengrep_gate.outcome }}
+          DAST_START_OUTCOME: ${{ steps.dast_start.outcome }}
+          DAST_OUTCOME: ${{ steps.dast_gate.outcome }}
+        run: |
+          {
+            echo "### Security testing gates"
+            echo
+            echo "Trivy: $TRIVY_OUTCOME"
+            echo "Opengrep: $OPENGREP_OUTCOME"
+            echo "DAST target: $DAST_START_OUTCOME"
+            echo "ZAP: $DAST_OUTCOME"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ "$TRIVY_OUTCOME" != "success" ]] ||
+             [[ "$OPENGREP_OUTCOME" != "success" ]] ||
+             [[ "$DAST_START_OUTCOME" != "success" ]] ||
+             [[ "$DAST_OUTCOME" != "success" ]]; then
+            echo "::error::At least one security gate rejected the production candidate."
+            exit 1
+          fi
+
+      - name: Package approved image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          mkdir -p approved-image
+          docker save --output approved-image/image.tar "$LOCAL_IMAGE"
+          cp "$REPORT_DIR/image-id.txt" approved-image/image-id.txt
+          printf '%s\n' "$GITHUB_SHA" > approved-image/source-sha.txt
+          (
+            cd approved-image
+            sha256sum image.tar > image.tar.sha256
+          )
+
+      - name: Upload approved image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: approved-image-${{ github.run_id }}-${{ github.run_attempt }}
+          path: approved-image/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+      - name: Upload scan evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: scan-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.REPORT_DIR }}/
+          if-no-files-found: warn
+          retention-days: 14
