@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from html import escape
 from typing import Annotated
 
 from fastapi import FastAPI, HTTPException, Query, status
@@ -50,12 +51,13 @@ def products() -> list[Product]:
 def search(
     q: Annotated[str, Query(min_length=1, max_length=128)],
 ) -> HTMLResponse:
-    # INTENTIONALLY VULNERABLE (Experiment 3): the product query is reflected
-    # without HTML encoding so ZAP can verify a reachable CWE-79 path.
+    safe_query = escape(q)
+    # Experiment 3 intentionally omits browser security headers from this HTML
+    # response so ZAP can report the resulting configuration findings.
     return HTMLResponse(
         "<!doctype html><html lang=\"en\"><head>"
         "<meta charset=\"utf-8\"><title>Product search</title></head>"
-        f"<body><h1>Product search</h1><p>Results for: {q}</p></body></html>"
+        f"<body><h1>Product search</h1><p>Results for: {safe_query}</p></body></html>"
     )
 
 

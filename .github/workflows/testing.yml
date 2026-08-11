@@ -156,7 +156,7 @@ jobs:
           retention-days: 14
 
   dast_experiment:
-    name: ZAP reflected XSS experiment
+    name: ZAP security-header experiment
     if: >-
       ${{
         github.event_name == 'workflow_dispatch' &&
@@ -232,21 +232,26 @@ jobs:
             exit 1
           fi
 
-      - name: Scan the application with ZAP
+      - name: Scan response headers with ZAP
         run: |
+          set +e
           docker run --rm \
             --name "$ZAP_CONTAINER" \
             --network "$DAST_NETWORK" \
             --volume "$GITHUB_WORKSPACE/$DAST_REPORT_DIR/zap:/zap/wrk:rw" \
-            "$ZAP_IMAGE" zap-full-scan.py \
+            "$ZAP_IMAGE" zap-baseline.py \
             -t "http://shop:8000/search?q=keyboard" \
-            -I \
             -m 1 \
             -T 5 \
             -J zap.json \
             -r zap.html \
             -s \
             2>&1 | tee "$DAST_REPORT_DIR/zap/zap.log"
+          zap_exit_code="${PIPESTATUS[0]}"
+          set -e
+          printf '%s\n' "$zap_exit_code" \
+            > "$DAST_REPORT_DIR/zap/zap-exit-code.txt"
+          exit "$zap_exit_code"
 
       - name: Clean up the DAST target
         if: always()
@@ -355,7 +360,7 @@ jobs:
         run: |
           mkdir -p "$REPORT_DIR"
           "$RUNNER_TEMP/opengrep" scan \
-            --config auto \
+            --config "$OPENGREP_EXPERIMENT_RULE" \
             --no-rewrite-rule-ids \
             --disable-version-check \
             --strict \

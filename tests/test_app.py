@@ -35,16 +35,25 @@ def test_products_return_the_demo_catalog() -> None:
     ]
 
 
-def test_product_search_returns_deliberately_unescaped_html() -> None:
-    query = "Security & Privacy"
+def test_product_search_escapes_html() -> None:
+    query = '<script>alert("xss")</script>'
 
     with TestClient(app) as client:
         response = client.get("/search", params={"q": query})
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
-    assert "Results for: Security & Privacy" in response.text
-    assert "Security &amp; Privacy" not in response.text
+    assert query not in response.text
+    assert "&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;" in response.text
+
+
+def test_product_search_omits_security_headers_for_experiment_3() -> None:
+    with TestClient(app) as client:
+        response = client.get("/search", params={"q": "keyboard"})
+
+    assert "content-security-policy" not in response.headers
+    assert "x-frame-options" not in response.headers
+    assert "x-content-type-options" not in response.headers
 
 
 def test_product_search_requires_a_bounded_query() -> None:
