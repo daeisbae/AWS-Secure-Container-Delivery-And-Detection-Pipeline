@@ -81,8 +81,8 @@ jobs:
             --scanners vuln \
             --severity CRITICAL \
             --exit-code 1 \
-            --format json \
-            --output "$CONTAINER_REPORT_DIR/trivy.json" \
+            --format sarif \
+            --output "$CONTAINER_REPORT_DIR/trivy.sarif" \
             "$LOCAL_IMAGE" \
             > "$CONTAINER_REPORT_DIR/trivy.log" 2>&1
           scan_exit_code="$?"
@@ -143,7 +143,7 @@ jobs:
             --no-rewrite-rule-ids \
             --disable-version-check \
             --strict \
-            --json-output="$SAST_REPORT_DIR/opengrep.json" \
+            --sarif-output="$SAST_REPORT_DIR/opengrep.sarif" \
             app/store.py
 
       - name: Upload Opengrep evidence
@@ -238,12 +238,13 @@ jobs:
           docker run --rm \
             --name "$ZAP_CONTAINER" \
             --network "$DAST_NETWORK" \
+            --env ZAP_HOOKS=/zap/zap_sarif_report.py \
+            --volume "$GITHUB_WORKSPACE/.github/scripts/zap_sarif_report.py:/zap/zap_sarif_report.py:ro" \
             --volume "$GITHUB_WORKSPACE/$DAST_REPORT_DIR/zap:/zap/wrk:rw" \
             "$ZAP_IMAGE" zap-baseline.py \
             -t "http://shop:8000/search?q=keyboard" \
             -m 1 \
             -T 5 \
-            -J zap.json \
             -r zap.html \
             -s \
             2>&1 | tee "$DAST_REPORT_DIR/zap/zap.log"
@@ -349,8 +350,8 @@ jobs:
             --scanners vuln \
             --severity CRITICAL \
             --exit-code 1 \
-            --format json \
-            --output "$REPORT_DIR/trivy-critical.json" \
+            --format sarif \
+            --output "$REPORT_DIR/trivy-critical.sarif" \
             "$LOCAL_IMAGE"
 
       - name: Block static-analysis findings
@@ -365,7 +366,7 @@ jobs:
             --disable-version-check \
             --strict \
             --error \
-            --json-output="$REPORT_DIR/opengrep.json" \
+            --sarif-output="$REPORT_DIR/opengrep.sarif" \
             app/
 
       - name: Start the isolated DAST target
@@ -421,12 +422,13 @@ jobs:
           docker run --rm \
             --name "$ZAP_CONTAINER" \
             --network "$DAST_NETWORK" \
+            --env ZAP_HOOKS=/zap/zap_sarif_report.py \
+            --volume "$GITHUB_WORKSPACE/.github/scripts/zap_sarif_report.py:/zap/zap_sarif_report.py:ro" \
             --volume "$GITHUB_WORKSPACE/$REPORT_DIR/zap:/zap/wrk:rw" \
             "$ZAP_IMAGE" zap-api-scan.py \
             -t "http://shop:8000/openapi.json" \
             -f openapi \
             -T 5 \
-            -J zap.json \
             -r zap.html \
             -s \
             2>&1 | tee "$REPORT_DIR/zap/zap.log"
