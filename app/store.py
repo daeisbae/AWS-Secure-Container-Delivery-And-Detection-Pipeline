@@ -19,6 +19,7 @@ from sqlalchemy import (
     Table,
     create_engine,
     select,
+    text,
 )
 from sqlalchemy.engine import Connection
 from sqlalchemy.pool import StaticPool
@@ -106,13 +107,14 @@ def _load_login_record(
     connection: Connection,
     credentials: Credentials,
 ):
-    # INTENTIONALLY VULNERABLE (Experiment 2): user input is interpolated into
-    # executable SQL so the production source gives Opengrep a real CWE-89 path.
-    query = (
+    statement = text(
         "SELECT id, username, password_salt, password_hash FROM users "
-        f"WHERE username = '{credentials.username}'"
+        "WHERE username = :username"
     )
-    return connection.execute(query).fetchone()
+    return connection.execute(
+        statement,
+        {"username": credentials.username},
+    ).fetchone()
 
 
 def authenticate(credentials: Credentials) -> UserRecord | None:
