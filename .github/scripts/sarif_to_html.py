@@ -14,6 +14,17 @@ from urllib.parse import urlsplit
 
 KNOWN_SEVERITIES = ("critical", "high", "medium", "low", "unknown")
 KNOWN_LEVELS = ("error", "warning", "note", "none")
+SEVERITY_ORDER = (
+    "critical",
+    "error",
+    "high",
+    "medium",
+    "warning",
+    "low",
+    "note",
+    "none",
+    "unknown",
+)
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -106,6 +117,16 @@ def _location(result: dict[str, Any]) -> str:
     return label
 
 
+def _snippet(result: dict[str, Any]) -> str:
+    locations = _sequence(result.get("locations"))
+    if not locations or not isinstance(locations[0], dict):
+        return ""
+
+    physical = _mapping(locations[0].get("physicalLocation"))
+    region = _mapping(physical.get("region"))
+    return _message_text(region.get("snippet"))
+
+
 def _safe_http_url(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
@@ -115,15 +136,6 @@ def _safe_http_url(value: Any) -> str | None:
     return value
 
 
-def _scanner(run: dict[str, Any]) -> tuple[str, str | None]:
-    driver = _mapping(_mapping(run.get("tool")).get("driver"))
-    name = driver.get("name")
-    scanner_name = str(name) if isinstance(name, (str, int)) else "Unknown scanner"
-    version = driver.get("semanticVersion") or driver.get("version")
-    scanner_version = str(version) if isinstance(version, (str, int)) else None
-    return scanner_name, scanner_version
-
-
 def _finding_html(result: dict[str, Any], rule: dict[str, Any], number: int) -> str:
     rule_id_value = result.get("ruleId") or rule.get("id") or "Unidentified rule"
     rule_id = html.escape(str(rule_id_value), quote=True)
@@ -131,6 +143,7 @@ def _finding_html(result: dict[str, Any], rule: dict[str, Any], number: int) -> 
     severity_label = html.escape(severity.upper(), quote=True)
     message = _message_text(result.get("message")) or "No finding description provided."
     location = _location(result)
+    snippet = _snippet(result)
     details = (
         _message_text(rule.get("fullDescription"))
         or _message_text(rule.get("help"))
@@ -138,7 +151,7 @@ def _finding_html(result: dict[str, Any], rule: dict[str, Any], number: int) -> 
     )
     help_url = _safe_http_url(rule.get("helpUri"))
 
-    reference = ""
+    reference = '<span class="muted">-</span>'
     if help_url:
         escaped_url = html.escape(help_url, quote=True)
         reference = (
@@ -154,35 +167,40 @@ def _finding_html(result: dict[str, Any], rule: dict[str, Any], number: int) -> 
             "</details>"
         )
 
+    snippet_block = ""
+    if snippet:
+        snippet_block = (
+            '<pre class="code-snippet"><code>'
+            f"{html.escape(snippet, quote=True)}"
+            "</code></pre>"
+        )
+
     return f"""
-        <li class="finding">
-          <div class="finding-heading">
-            <span class="severity severity-{severity}">{severity_label}</span>
-            <code>{rule_id}</code>
-          </div>
-          <div class="location">{html.escape(location, quote=True)}</div>
-          <div class="message">{html.escape(message, quote=True)}</div>
-          <div class="finding-footer">
-            <span>Finding {number}</span>
-            {reference}
-          </div>
-          {detail_block}
-        </li>"""
+        <tr class="finding-row severity-{severity}">
+          <td class="finding-number">{number}</td>
+          <td class="severity-cell">{severity_label}</td>
+          <td><code class="rule-id">{rule_id}</code></td>
+          <td>
+            <code class="location">{html.escape(location, quote=True)}</code>
+            {snippet_block}
+          </td>
+          <td>
+            <div class="message">{html.escape(message, quote=True)}</div>
+            {detail_block}
+          </td>
+          <td class="reference">{reference}</td>
+        </tr>"""
 
 
-def render_html(sarif: dict[str, Any], title: str, source_name: str) -> str:
+def render_html(sarif: dict[str, Any], title: str) -> str:
     if sarif.get("version") != "2.1.0":
         raise ValueError("Expected a SARIF 2.1.0 document")
 
     runs = [run for run in _sequence(sarif.get("runs")) if isinstance(run, dict)]
-    total_findings = sum(len(_sequence(run.get("results"))) for run in runs)
     escaped_title = html.escape(title, quote=True)
-    escaped_source = html.escape(source_name, quote=True)
-    finding_word = "finding" if total_findings == 1 else "findings"
 
     run_sections: list[str] = []
-    for run_number, run in enumerate(runs, start=1):
-        scanner_name, scanner_version = _scanner(run)
+    for run in runs:
         results = [
             result
             for result in _sequence(run.get("results"))
@@ -193,38 +211,54 @@ def render_html(sarif: dict[str, Any], title: str, source_name: str) -> str:
             (result, _rule_for_result(result, rules, rules_by_id)) for result in results
         ]
         counts = Counter(_severity(result, rule) for result, rule in resolved)
-        count_badges = "".join(
-            f'<span class="count"><strong>{count}</strong> '
-            f'{html.escape(level.upper(), quote=True)}</span>'
-            for level, count in sorted(counts.items())
-        )
-        version_html = (
-            f'<span class="scanner-version">Version '
-            f'{html.escape(scanner_version, quote=True)}</span>'
-            if scanner_version
-            else ""
+        count_rows = "".join(
+            f'<tr class="severity-{level}">'
+            f'<th scope="row" class="severity-cell">'
+            f'{html.escape(level.upper(), quote=True)}</th>'
+            f'<td>{counts[level]}</td></tr>'
+            for level in SEVERITY_ORDER
+            if counts[level]
         )
         findings_html = "".join(
             _finding_html(result, rule, finding_number)
             for finding_number, (result, rule) in enumerate(resolved, start=1)
         )
         if not findings_html:
-            findings_html = '<p class="empty">No findings were reported.</p>'
-        else:
-            findings_html = f'<ol class="findings">{findings_html}</ol>'
+            findings_html = (
+                '<tr><td class="empty" colspan="6">'
+                "No findings were reported.</td></tr>"
+            )
 
         run_sections.append(
             f"""
-      <section class="run" aria-labelledby="run-{run_number}">
-        <header class="run-header">
-          <div>
-            <p class="eyebrow">Scanner run {run_number}</p>
-            <h2 id="run-{run_number}">{html.escape(scanner_name, quote=True)}</h2>
-            {version_html}
-          </div>
-          <div class="counts">{count_badges}</div>
-        </header>
-        {findings_html}
+      <section class="run">
+        <h3>Severity summary</h3>
+        <div class="table-scroll compact-table">
+          <table class="severity-summary">
+            <caption>Finding counts by severity</caption>
+            <thead>
+              <tr><th scope="col">Severity</th><th scope="col">Count</th></tr>
+            </thead>
+            <tbody>{count_rows or '<tr><td colspan="2">No findings</td></tr>'}</tbody>
+          </table>
+        </div>
+        <h3>Findings</h3>
+        <div class="table-scroll">
+          <table class="findings-table">
+            <caption>Findings</caption>
+            <thead>
+              <tr>
+                <th scope="col">#</th>
+                <th scope="col">Severity</th>
+                <th scope="col">Rule ID</th>
+                <th scope="col">Location</th>
+                <th scope="col">Finding</th>
+                <th scope="col">Reference</th>
+              </tr>
+            </thead>
+            <tbody>{findings_html}</tbody>
+          </table>
+        </div>
       </section>"""
         )
 
@@ -242,61 +276,68 @@ def render_html(sarif: dict[str, Any], title: str, source_name: str) -> str:
         content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
   <title>{escaped_title}</title>
   <style>
-    :root {{ color-scheme: light dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }}
+    :root {{ color-scheme: light; font-family: Arial, Helvetica, sans-serif; }}
     * {{ box-sizing: border-box; }}
-    body {{ margin: 0; background: #0b1020; color: #e8edf7; line-height: 1.5; }}
-    main {{ width: min(1100px, calc(100% - 2rem)); margin: 0 auto; padding: 2.5rem 0 4rem; }}
-    h1, h2, p {{ margin-top: 0; }}
-    h1 {{ margin-bottom: .5rem; font-size: clamp(1.8rem, 4vw, 2.6rem); }}
-    h2 {{ margin-bottom: .2rem; }}
-    code {{ overflow-wrap: anywhere; color: #dce7ff; }}
-    a {{ color: #8db8ff; }}
-    .subtitle, .scanner-version, .location, .finding-footer {{ color: #aebbd3; }}
-    .summary {{ display: flex; gap: .75rem; flex-wrap: wrap; margin: 1.5rem 0 2rem; }}
-    .summary-item, .count {{ border: 1px solid #34415f; border-radius: 999px; padding: .35rem .7rem; }}
-    .run {{ margin-top: 1.25rem; border: 1px solid #2d3954; border-radius: 14px; background: #11182a; overflow: hidden; }}
-    .run-header {{ display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 1.25rem; border-bottom: 1px solid #2d3954; }}
-    .eyebrow {{ margin-bottom: .15rem; color: #8db8ff; font-size: .78rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }}
-    .counts {{ display: flex; gap: .5rem; flex-wrap: wrap; justify-content: flex-end; }}
-    .findings {{ list-style: none; padding: 1rem; margin: 0; display: grid; gap: .8rem; }}
-    .finding {{ border: 1px solid #34415f; border-radius: 10px; padding: 1rem; background: #0e1526; }}
-    .finding-heading, .finding-footer {{ display: flex; align-items: center; justify-content: space-between; gap: .75rem; }}
-    .severity {{ flex: 0 0 auto; border-radius: 999px; padding: .2rem .55rem; color: #fff; font-size: .72rem; font-weight: 800; letter-spacing: .04em; }}
-    .severity-critical, .severity-error {{ background: #b42318; }}
-    .severity-high {{ background: #c2410c; }}
-    .severity-medium, .severity-warning {{ background: #a15c00; }}
-    .severity-low, .severity-note {{ background: #176b3a; }}
-    .severity-unknown, .severity-none {{ background: #526078; }}
-    .location {{ margin-top: .7rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .86rem; overflow-wrap: anywhere; }}
-    .message, .details-text {{ margin-top: .75rem; white-space: pre-wrap; overflow-wrap: anywhere; }}
-    .finding-footer {{ margin-top: .9rem; font-size: .86rem; }}
-    details {{ margin-top: .8rem; }}
-    summary {{ cursor: pointer; color: #cbd7ed; }}
-    .empty {{ margin: 0; padding: 1.25rem; color: #aebbd3; }}
-    @media (max-width: 650px) {{
-      .run-header, .finding-heading, .finding-footer {{ align-items: flex-start; flex-direction: column; }}
-      .counts {{ justify-content: flex-start; }}
+    body {{ margin: 0; background: #fff; color: #222; font-size: 14px; line-height: 1.45; }}
+    main {{ width: min(1400px, calc(100% - 2rem)); margin: 0 auto; padding: 2rem 0 3rem; }}
+    h1, h3, p {{ margin-top: 0; }}
+    h1 {{ margin-bottom: 2rem; text-align: center; font-size: 2rem; }}
+    h3 {{ margin: 1.5rem 0 .45rem; font-size: 1rem; }}
+    code {{ font-family: Menlo, Consolas, monospace; overflow-wrap: anywhere; }}
+    a {{ color: #0b57a3; }}
+    .run > h3:first-child {{ margin-top: 0; }}
+    .run + .run {{ margin-top: 2rem; padding-top: 2rem; border-top: 2px solid #b7b7b7; }}
+    .table-scroll {{ width: 100%; overflow-x: auto; }}
+    table {{ width: 100%; border-collapse: collapse; border-spacing: 0; }}
+    caption {{ position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }}
+    th, td {{ border: 1px solid #b7b7b7; padding: .55rem .65rem; text-align: left; vertical-align: top; }}
+    thead th {{ background: #666; color: #fff; font-weight: 700; white-space: nowrap; }}
+    .compact-table {{ max-width: 420px; margin: 0 auto; }}
+    .severity-summary th, .severity-summary td {{ width: 50%; }}
+    .severity-summary td {{ background: #f4f4f4; text-align: center; font-weight: 700; }}
+    .findings-table {{ min-width: 980px; }}
+    .findings-table td {{ background: #f2f2f2; }}
+    .finding-number {{ width: 3rem; text-align: center; }}
+    .severity-cell {{ width: 7rem; color: #fff; font-weight: 700; text-align: center; white-space: nowrap; }}
+    .severity-critical .severity-cell, .severity-error .severity-cell {{ background: #d92d20; }}
+    .severity-high .severity-cell {{ background: #ed7d31; }}
+    .severity-medium .severity-cell, .severity-warning .severity-cell {{ background: #f2c94c; color: #222; }}
+    .severity-low .severity-cell, .severity-note .severity-cell {{ background: #5aa647; }}
+    .severity-unknown .severity-cell, .severity-none .severity-cell {{ background: #6b7280; }}
+    .finding-row.severity-critical td, .finding-row.severity-error td {{ background: #fdebea; }}
+    .finding-row.severity-high td {{ background: #fff0e6; }}
+    .finding-row.severity-medium td, .finding-row.severity-warning td {{ background: #fff8d9; }}
+    .finding-row.severity-low td, .finding-row.severity-note td {{ background: #edf7e9; }}
+    .finding-row.severity-unknown td, .finding-row.severity-none td {{ background: #f0f1f3; }}
+    .finding-row.severity-critical .severity-cell, .finding-row.severity-error .severity-cell {{ background: #d92d20; color: #fff; }}
+    .finding-row.severity-high .severity-cell {{ background: #ed7d31; color: #fff; }}
+    .finding-row.severity-medium .severity-cell, .finding-row.severity-warning .severity-cell {{ background: #f2c94c; color: #222; }}
+    .finding-row.severity-low .severity-cell, .finding-row.severity-note .severity-cell {{ background: #5aa647; color: #fff; }}
+    .finding-row.severity-unknown .severity-cell, .finding-row.severity-none .severity-cell {{ background: #6b7280; color: #fff; }}
+    .rule-id, .location {{ font-size: .86rem; }}
+    .message, .details-text {{ white-space: pre-wrap; overflow-wrap: anywhere; }}
+    .code-snippet {{ max-width: 34rem; margin: .55rem 0 0; padding: .5rem; overflow-x: auto; border: 1px solid #c6c6c6; background: #fff; white-space: pre-wrap; }}
+    .reference {{ text-align: center; white-space: nowrap; }}
+    .muted {{ color: #666; }}
+    details {{ margin-top: .55rem; }}
+    summary {{ cursor: pointer; color: #444; font-weight: 700; }}
+    .empty {{ padding: 1rem; color: #555; text-align: center; }}
+    @media (max-width: 700px) {{
+      main {{ width: min(100% - 1rem, 1400px); padding-top: 1rem; }}
+      h1 {{ font-size: 1.55rem; }}
     }}
     @media print {{
-      body {{ background: #fff; color: #111827; }}
       main {{ width: 100%; padding: 0; }}
-      .run, .finding {{ background: #fff; border-color: #cbd5e1; break-inside: avoid; }}
-      code, a {{ color: #1e3a8a; }}
-      .subtitle, .scanner-version, .location, .finding-footer, .empty {{ color: #475569; }}
+      body, .severity-cell, thead th {{ print-color-adjust: exact; -webkit-print-color-adjust: exact; }}
+      .table-scroll {{ overflow: visible; }}
+      .findings-table {{ min-width: 0; font-size: 10px; }}
+      tr {{ break-inside: avoid; }}
     }}
   </style>
 </head>
 <body>
   <main>
-    <header>
-      <h1>{escaped_title}</h1>
-      <p class="subtitle">Human-readable export of <code>{escaped_source}</code></p>
-      <div class="summary" aria-label="Report summary">
-        <span class="summary-item"><strong>{total_findings}</strong> {finding_word}</span>
-        <span class="summary-item"><strong>{len(runs)}</strong> scanner run{'s' if len(runs) != 1 else ''}</span>
-        <span class="summary-item">SARIF 2.1.0</span>
-      </div>
-    </header>
+    <h1>{escaped_title}</h1>
     {''.join(run_sections)}
   </main>
 </body>
@@ -312,7 +353,7 @@ def convert(input_path: Path, output_path: Path, title: str) -> None:
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
-        render_html(sarif, title=title, source_name=input_path.name),
+        render_html(sarif, title=title),
         encoding="utf-8",
     )
 
