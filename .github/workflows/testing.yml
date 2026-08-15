@@ -76,17 +76,30 @@ jobs:
 
       - name: Scan for critical container vulnerabilities
         run: |
+          trivy_json="$RUNNER_TEMP/trivy-experiment.json"
+          trivy_template="$(dirname "$(command -v trivy)")/contrib/html.tpl"
           set +e
           trivy image \
             --scanners vuln \
             --severity CRITICAL \
             --exit-code 1 \
-            --format sarif \
-            --output "$CONTAINER_REPORT_DIR/trivy.sarif" \
+            --format json \
+            --output "$trivy_json" \
             "$LOCAL_IMAGE" \
             > "$CONTAINER_REPORT_DIR/trivy.log" 2>&1
           scan_exit_code="$?"
           set -e
+
+          trivy convert \
+            --format sarif \
+            --output "$CONTAINER_REPORT_DIR/trivy.sarif" \
+            "$trivy_json"
+          trivy convert \
+            --format template \
+            --template "@$trivy_template" \
+            --output "$CONTAINER_REPORT_DIR/trivy.html" \
+            "$trivy_json"
+
           cat "$CONTAINER_REPORT_DIR/trivy.log"
           printf '%s\n' "$scan_exit_code" \
             > "$CONTAINER_REPORT_DIR/trivy-exit-code.txt"
@@ -145,6 +158,16 @@ jobs:
             --strict \
             --sarif-output="$SAST_REPORT_DIR/opengrep.sarif" \
             app/store.py
+
+      - name: Export Opengrep HTML report
+        if: always()
+        run: |
+          if [[ -f "$SAST_REPORT_DIR/opengrep.sarif" ]]; then
+            python3 .github/scripts/sarif_to_html.py \
+              "$SAST_REPORT_DIR/opengrep.sarif" \
+              "$SAST_REPORT_DIR/opengrep.html" \
+              --title "Opengrep static-analysis report"
+          fi
 
       - name: Upload Opengrep evidence
         if: always()
@@ -346,13 +369,29 @@ jobs:
         if: always() && steps.setup_trivy.outcome == 'success'
         continue-on-error: true
         run: |
+          trivy_json="$RUNNER_TEMP/trivy-critical.json"
+          trivy_template="$(dirname "$(command -v trivy)")/contrib/html.tpl"
+          set +e
           trivy image \
             --scanners vuln \
             --severity CRITICAL \
             --exit-code 1 \
+            --format json \
+            --output "$trivy_json" \
+            "$LOCAL_IMAGE"
+          scan_exit_code="$?"
+          set -e
+
+          trivy convert \
             --format sarif \
             --output "$REPORT_DIR/trivy-critical.sarif" \
-            "$LOCAL_IMAGE"
+            "$trivy_json"
+          trivy convert \
+            --format template \
+            --template "@$trivy_template" \
+            --output "$REPORT_DIR/trivy-critical.html" \
+            "$trivy_json"
+          exit "$scan_exit_code"
 
       - name: Block static-analysis findings
         id: opengrep_gate
@@ -368,6 +407,16 @@ jobs:
             --error \
             --sarif-output="$REPORT_DIR/opengrep.sarif" \
             app/
+
+      - name: Export Opengrep HTML report
+        if: always()
+        run: |
+          if [[ -f "$REPORT_DIR/opengrep.sarif" ]]; then
+            python3 .github/scripts/sarif_to_html.py \
+              "$REPORT_DIR/opengrep.sarif" \
+              "$REPORT_DIR/opengrep.html" \
+              --title "Opengrep static-analysis report"
+          fi
 
       - name: Start the isolated DAST target
         id: dast_start
