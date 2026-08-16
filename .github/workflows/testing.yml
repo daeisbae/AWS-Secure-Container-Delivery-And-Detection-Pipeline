@@ -480,12 +480,42 @@ jobs:
             -T 5 \
             -r zap.html \
             -s \
+            -I \
             2>&1 | tee "$REPORT_DIR/zap/zap.log"
-          zap_exit_code="${PIPESTATUS[0]}"
+          scanner_exit_code="${PIPESTATUS[0]}"
           set -e
-          printf '%s\n' "$zap_exit_code" \
-            > "$REPORT_DIR/zap/zap-exit-code.txt"
-          exit "$zap_exit_code"
+          printf '%s\n' "$scanner_exit_code" \
+            > "$REPORT_DIR/zap/zap-scanner-exit-code.txt"
+
+          if [[ "$scanner_exit_code" != "0" ]]; then
+            printf '%s\n' "$scanner_exit_code" \
+              > "$REPORT_DIR/zap/zap-exit-code.txt"
+            exit "$scanner_exit_code"
+          fi
+
+          sarif_report="$REPORT_DIR/zap/zap.sarif.json"
+          if [[ ! -s "$sarif_report" ]]; then
+            echo "::error::ZAP did not produce a SARIF report."
+            printf '%s\n' 3 > "$REPORT_DIR/zap/zap-exit-code.txt"
+            exit 3
+          fi
+
+          blocking_alerts="$(jq \
+            '[.runs[]?.results[]? | select(
+              (.level // "warning") == "warning" or
+              (.level // "warning") == "error"
+            )] | length' \
+            "$sarif_report")"
+          printf '%s\n' "$blocking_alerts" \
+            > "$REPORT_DIR/zap/zap-blocking-alert-count.txt"
+
+          if (( blocking_alerts > 0 )); then
+            printf '%s\n' 1 > "$REPORT_DIR/zap/zap-exit-code.txt"
+            echo "::error::ZAP reported $blocking_alerts Medium-or-higher alert(s)."
+            exit 1
+          fi
+
+          printf '%s\n' 0 > "$REPORT_DIR/zap/zap-exit-code.txt"
 
       - name: Clean up the DAST target
         if: always()
