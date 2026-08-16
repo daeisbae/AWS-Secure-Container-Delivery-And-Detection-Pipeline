@@ -1,14 +1,25 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from html import escape
 from typing import Annotated
 
-from fastapi import FastAPI, HTTPException, Query, status
+from fastapi import FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, StringConstraints
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.store import authenticate, issue_access_token, list_products
+
+
+_SECURITY_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'self'; object-src 'none'; base-uri 'none'; "
+        "form-action 'self'; frame-ancestors 'none'"
+    ),
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+}
 
 
 class HealthResponse(BaseModel):
@@ -37,6 +48,17 @@ class LoginResponse(BaseModel):
 app = FastAPI(title="Pipeline Security Shop", version="1.0.0")
 
 
+@app.middleware("http")
+async def add_security_headers(
+    request: Request,
+    call_next: Callable[[Request], Awaitable[Response]],
+) -> Response:
+    response = await call_next(request)
+    for name, value in _SECURITY_HEADERS.items():
+        response.headers[name] = value
+    return response
+
+
 @app.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     return HealthResponse(status="ok")
@@ -52,8 +74,6 @@ def search(
     q: Annotated[str, Query(min_length=1, max_length=128)],
 ) -> HTMLResponse:
     safe_query = escape(q)
-    # Experiment 3 intentionally omits browser security headers from this HTML
-    # response so ZAP can report the resulting configuration findings.
     return HTMLResponse(
         "<!doctype html><html lang=\"en\"><head>"
         "<meta charset=\"utf-8\"><title>Product search</title></head>"
