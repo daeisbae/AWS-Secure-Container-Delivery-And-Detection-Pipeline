@@ -31,3 +31,15 @@ The /search route escapes the query before writing it into HTML, but the applica
 ### Fix
 
 Add response middleware so every route receives Content-Security-Policy, `X-Frame-Options: DENY`, and `X-Content-Type-Options: nosniff`. A reasonable policy for this page is `default-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'` as it only allows application interaction itself without any legacy plugin.
+
+## SCA: vulnerable container packages
+
+![](images/trivy-critical-vulnerabilities.png)
+
+### Cause
+
+The base image contains vulnerable version of libcrypto3, libssl3, sqlite-libs. The Python lock file also installs vulnerable version of Authlib and SQLAlchemy.
+
+### Fix
+
+Update to a container image that contains libcrypto3 and libssl3 3.3.7-r0 or newer, and sqlite-libs 3.48.0-r1 or newer. For python requirement.txt packages, update Authlib to 1.6.9 or newer, and replace SQLAlchemy 1.2.17.

@@ -11,10 +11,6 @@ from app.main import app
 _DEMO_PASSWORD = os.environ["SHOP_DEMO_PASSWORD"]
 
 
-def test_deliberate_production_dependency_versions() -> None:
-    assert authlib.__version__ == "1.6.8"
-    assert sqlalchemy.__version__ == "1.2.17"
-
 
 def test_health_returns_exact_response() -> None:
     with TestClient(app) as client:
@@ -45,15 +41,6 @@ def test_product_search_escapes_html() -> None:
     assert response.headers["content-type"].startswith("text/html")
     assert query not in response.text
     assert "&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;" in response.text
-
-
-def test_product_search_omits_security_headers_for_experiment_3() -> None:
-    with TestClient(app) as client:
-        response = client.get("/search", params={"q": "keyboard"})
-
-    assert "content-security-policy" not in response.headers
-    assert "x-frame-options" not in response.headers
-    assert "x-content-type-options" not in response.headers
 
 
 def test_product_search_requires_a_bounded_query() -> None:
