@@ -104,3 +104,45 @@ Update to a container image that contains libcrypto3 and libssl3 3.3.7-r0 or new
 ## SCA: vulnerable container packages
 
 ![](images/trivy-no-vulnerabilities-after-remediation.png)
+
+## AWS deployment
+
+The delivery workflow runs after the Testing workflow succeeds. Afterwards, it applies the Terraform configuration, then sign and deploy the image.
+
+![Successful GitHub Actions delivery workflow](images/github-actions-delivery-workflow-success.png)
+
+### GitHub OIDC and Terraform
+
+Using GitHub OIDC token is safer than stored access key as we can assume the role for just 30 minutes. Then terraform is run to deploy it using that credential.
+
+![GitHub Actions assuming the AWS infrastructure role through OIDC](images/github-actions-oidc-role-assumption.png)
+
+![Terraform apply completed with deployment outputs](images/github-actions-terraform-apply-complete.png)
+
+### VPC
+
+We created multi AZ VPC with public subnets in ca-central-1a and ca-central-1b. Both subnets use the same public route table when the instance is down in one AZ.
+
+![AWS VPC resource map with two public subnets](images/aws-vpc-public-subnets-resource-map.png)
+
+### ECR image and signature
+
+![Private ECR repository configuration](images/aws-ecr-private-repository.png)
+
+After the push, ECR stores the container image and its Cosign signature as separate artifacts. The image below shows the SHA-256 digest, a completed ECR scan that reported zero findings, and the signature referrer.
+
+![Container image and Cosign signature artifacts in ECR](images/aws-ecr-signed-image-artifacts.png)
+
+![ECR image scan and signature referrer](images/aws-ecr-image-scan-and-signature.png)
+
+We can see that Cosign verification checked the workflow identity, certificate, and transparency log entry before the ECS update. We implemented this for codebase auditing purpose.
+
+![Cosign signing and verification in GitHub Actions](images/github-actions-cosign-sign-and-verify.png)
+
+### ECS service
+
+![ECS task definition pinned to the ECR image digest](images/aws-ecs-task-definition-image-digest.png)
+
+The deployment is set to minimum 1 so it waited for the service to become stable until it check the healthy status
+
+![Healthy task running in the ECS service](images/aws-ecs-service-healthy-task.png)
