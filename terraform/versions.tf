@@ -1,4 +1,8 @@
 terraform {
+  # GitHub Actions executes Terraform; HCP Terraform stores and locks state.
+  # The organization and workspace are supplied by the CI environment.
+  cloud {}
+
   required_version = ">= 1.5.7"
 
   required_providers {
@@ -20,4 +24,3 @@ provider "aws" {
     }
   }
 }
-

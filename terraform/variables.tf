@@ -29,7 +29,7 @@ variable "github_oidc_subject" {
 
 variable "manage_github_oidc_provider" {
   type    = bool
-  default = true
+  default = false
 }
 
 variable "allowed_cidr_blocks" {
