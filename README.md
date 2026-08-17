@@ -1,6 +1,8 @@
 # AWS Secure Container Delivery Pipeline
 
-This lab uses one imaginary vulnerable FastAPI e-commerce application to implement security pipeline.
+This lab uses a deliberately vulnerable FastAPI e-commerce application to demonstrate a secure container delivery pipeline.
+
+If you want to know how deployment configuration is done, check [SETUP.md](SETUP.md)
 
 ![Pipeline architecture](docs/architecture-security-headers.png)
 
@@ -13,7 +15,8 @@ This lab uses one imaginary vulnerable FastAPI e-commerce application to impleme
 5. Start that same image on an internal Docker network and run an OWASP ZAP scan.
 6. Generate a CycloneDX SBOM with Trivy.
 7. Package the image only if every security gate passes.
-8. For an approved main branch run, obtain short-lived AWS credentials through GitHub OIDC, push the same image to ECR, sign and verify its digest with Cosign, and update ECS.
+8. After a push, assume the infrastructure role through GitHub OIDC and run Terraform. HCP Terraform stores and locks the state.
+9. Use the delivery role created by Terraform to push the same image to ECR, sign and verify its digest with Cosign, and update ECS.
 
 ## Experiments
 
@@ -101,4 +104,3 @@ Update to a container image that contains libcrypto3 and libssl3 3.3.7-r0 or new
 ## SCA: vulnerable container packages
 
 ![](images/trivy-no-vulnerabilities-after-remediation.png)
-
