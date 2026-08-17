@@ -43,19 +43,19 @@ The `/search` route HTML encodes the submitted product query but omits browser s
 
 ## CI Security Pipeline
 
-# First run before remediation
+### First run before remediation
 
 ![](images/github-actions-security-gates-failed.png)
 
-## SAST: login SQL injection
+#### SAST: login SQL injection
 
 ![](images/opengrep-sql-injection-finding.png)
 
-### Cause
+##### Cause
 
 `_load_login_record()` inserts username directly into SQL text and sends that string to db cursor. Because the value becomes part of the query syntax, a crafted username can alter the WHERE SQL syntax.
 
-### Fix
+##### Fix
 
 ![](images/sql-injection-parameterized-query-fix.png)
 
@@ -65,53 +65,53 @@ The remediation use the f-string query the `:username` placeholder. `connection.
 
 This is the [SQLAlchemy docs](https://docs.sqlalchemy.org/en/21/core/sqlelement.html) referenced above.
 
-## DAST: missing browser security headers
+#### DAST: missing browser security headers
 
 ![](images/zap-missing-security-headers.png)
 
-### Cause
+##### Cause
 
 The /search route escapes the query before writing it into HTML, but the application does not add browser security headers. ZAP found no Content Security Policy and no anti-clickjacking policy header. Informational and Low alerts remain visible without blocking delivery, while Medium and High alerts reject the production candidate.
 
-### Fix
+##### Fix
 
 Add response middleware so every route receives Content-Security-Policy, `X-Frame-Options: DENY`, and `X-Content-Type-Options: nosniff`. A reasonable policy for this page is `default-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'` as it only allows application interaction itself without any legacy plugin.
 
-## SCA: vulnerable container packages
+#### SCA: vulnerable container packages
 
 ![](images/trivy-critical-vulnerabilities.png)
 
-### Cause
+##### Cause
 
 The base image contains vulnerable version of libcrypto3, libssl3, sqlite-libs. The Python lock file also installs vulnerable version of Authlib and SQLAlchemy.
 
-### Fix
+##### Fix
 
 Update to a container image that contains libcrypto3 and libssl3 3.3.7-r0 or newer, and sqlite-libs 3.48.0-r1 or newer. For python requirement.txt packages, update Authlib to 1.6.9 or newer, and replace SQLAlchemy 1.2.17.
 
-# Run after remediation
+### Run after remediation
 
 ![](images/github-actions-security-gates-passed.png)
 
-## SAST: login SQL injection
+#### SAST: login SQL injection
 
 ![](images/opengrep-no-findings-after-remediation.png)
 
-## DAST: missing browser security headers
+#### DAST: missing browser security headers
 
 ![](images/zap-no-blocking-findings-after-remediation.png)
 
-## SCA: vulnerable container packages
+#### SCA: vulnerable container packages
 
 ![](images/trivy-no-vulnerabilities-after-remediation.png)
 
-## AWS deployment
+### AWS deployment
 
 The delivery workflow runs after the Testing workflow succeeds. Afterwards, it applies the Terraform configuration, then sign and deploy the image.
 
 ![Successful GitHub Actions delivery workflow](images/github-actions-delivery-workflow-success.png)
 
-### GitHub OIDC and Terraform
+#### GitHub OIDC and Terraform
 
 Using GitHub OIDC token is safer than stored access key as we can assume the role for just 30 minutes. Then terraform is run to deploy it using that credential.
 
@@ -119,13 +119,13 @@ Using GitHub OIDC token is safer than stored access key as we can assume the rol
 
 ![Terraform apply completed with deployment outputs](images/github-actions-terraform-apply-complete.png)
 
-### VPC
+#### VPC
 
 We created multi AZ VPC with public subnets in ca-central-1a and ca-central-1b. Both subnets use the same public route table when the instance is down in one AZ.
 
 ![AWS VPC resource map with two public subnets](images/aws-vpc-public-subnets-resource-map.png)
 
-### ECR image and signature
+#### ECR image and signature
 
 ![Private ECR repository configuration](images/aws-ecr-private-repository.png)
 
@@ -139,7 +139,7 @@ We can see that Cosign verification checked the workflow identity, certificate, 
 
 ![Cosign signing and verification in GitHub Actions](images/github-actions-cosign-sign-and-verify.png)
 
-### ECS service
+#### ECS service
 
 ![ECS task definition pinned to the ECR image digest](images/aws-ecs-task-definition-image-digest.png)
 
