@@ -54,8 +54,3 @@ Put the token inside github secret
 
 ![OIDC provider ARN entered in the AWS Terraform role ARN variable](images/github-aws-terraform-role-arn-variable.png)
 
-Use a value with this shape instead:
-
-```text
-arn:aws:iam::<ACCOUNT_ID>:role/GithubActionOIDC_Deploy
-```
