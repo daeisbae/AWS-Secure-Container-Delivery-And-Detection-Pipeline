@@ -120,7 +120,7 @@ jobs:
           allowed-account-ids: ${{ steps.config.outputs.account_id }}
           role-session-name: Terraform-${{ github.run_id }}-${{ github.run_attempt }}
           role-duration-seconds: 1800
-          mask-aws-account-id: true
+          mask-aws-account-id: false
           unset-current-credentials: true
 
       - name: Plan infrastructure
